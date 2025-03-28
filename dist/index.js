@@ -197,6 +197,30 @@ function createOrUpdateBranch(git, commitMessage, base, branch, branchRemoteName
                 yield git.checkout(branch);
             }
         }
+        // Check if the pull request branch is behind the base branch
+        let wasReset = false;
+        yield git.exec(['fetch', baseRemote, base]);
+        if (yield isBehind(git, base, branch)) {
+            /*
+             * New changes to the base branch are not present in the PR branch.
+             *
+             * Reset the state of the PR branch back to that of the base branch,
+             * eliminating the commits currently in the PR branch.
+             *
+             * Normally dropping commits is undesirable, but in this specific case, it's
+             * necessary to circumvent any attempt git would make to merge/rebase the
+             * previous PR branch commits onto the newer base branch commits.
+             *
+             * Without doing so, this job would almost certainly fail due to conflicts.
+             *
+             * Ultimately, either the dropped commits were a subset of the changes in the
+             * working tree, or their respective changes have since been undone.
+             */
+            core.info(`Pull request branch '${branch}' is behind base branch '${base}'.`);
+            yield git.exec(['reset', '--soft', `${baseRemote}/${base}`]);
+            core.info(`Reset '${branch}' to '${base}'.`);
+            wasReset = true;
+        }
         // Commit any changes
         if (yield git.isDirty(true, addPaths)) {
             core.info('Uncommitted changes found. Adding a commit.');
@@ -219,16 +243,6 @@ function createOrUpdateBranch(git, commitMessage, base, branch, branchRemoteName
                 throw new Error(`Unexpected error: ${commitResult.stderr}`);
             }
         }
-        // Check if the pull request branch is behind the base branch
-        let wasRebased = false;
-        yield git.exec(['fetch', baseRemote, base]);
-        if (yield isBehind(git, base, branch)) {
-            // Rebase the current branch onto the base branch
-            core.info(`Pull request branch '${branch}' is behind base branch '${base}'.`);
-            yield git.exec(['pull', '--rebase', baseRemote, base]);
-            core.info(`Rebased '${branch}' commits ontop of '${base}'.`);
-            wasRebased = true;
-        }
         hasDiffWithBase = yield isAhead(git, base, branch);
         // If the base is not specified it is assumed to be the working base.
         base = base ? base : workingBase;
@@ -246,7 +260,7 @@ function createOrUpdateBranch(git, commitMessage, base, branch, branchRemoteName
             action: action,
             base: base,
             hasDiffWithBase: hasDiffWithBase,
-            wasRebased: wasRebased,
+            wasReset: wasReset,
             baseCommit: baseCommit,
             headSha: headSha,
             branchCommits: branchCommits
@@ -445,7 +459,7 @@ function createPullRequest(inputs) {
                     }
                 }
                 else {
-                    yield git.push(result.wasRebased ? [`--force-with-lease`, branchRemoteName, inputs.branch] : []);
+                    yield git.push(result.wasReset ? [`--force`, branchRemoteName, inputs.branch] : []);
                 }
                 core.endGroup();
             }
