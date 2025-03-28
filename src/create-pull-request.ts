@@ -228,7 +228,7 @@ export async function createPullRequest(inputs: Inputs): Promise<void> {
         }
       } else {
         await git.push(
-          result.wasRebased ? [`--force-with-lease`, branchRemoteName, inputs.branch] : []
+          result.wasReset ? [`--force`, branchRemoteName, inputs.branch] : []
         )
       }
       core.endGroup()
