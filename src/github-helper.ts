@@ -419,17 +419,20 @@ export class GitHubHelper {
   }
 
   async createIssueComment(repo: string | Repository, issueNumber: number, body: string) {
-    core.info(`Creating issue comment`)
     if (typeof repo === 'string') {
       repo = this.parseRepository(repo);
     }
+    core.info(`Creating comment on ${repo.repo} issue #${issueNumber}`);
     try {
-      await this.octokit.request(`POST /repos/${repo.owner}/${repo.repo}/issues/${issueNumber}/comments`, {
+      const response = await this.octokit.request(`POST /repos/${repo.owner}/${repo.repo}/issues/${issueNumber}/comments`, {
         owner: repo.owner,
         repo: repo.repo,
         issue_number: issueNumber,
         body,
       });
+      if (response.status != 201) {
+        core.warning(`Failed to create issue comment. ${response.data}`);
+      }
     } catch (e) {
       const errorMessage = utils.getErrorMessage(e)
       core.warning(`Failed to create issue comment: ${errorMessage}`);

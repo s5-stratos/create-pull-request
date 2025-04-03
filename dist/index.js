@@ -169,7 +169,6 @@ function splitLines(multilineString) {
 }
 function createOrUpdateBranch(git, commitMessage, base, branch, branchRemoteName, signoff, addPaths) {
     return __awaiter(this, void 0, void 0, function* () {
-        throw new Error(`Error! :)`);
         // Get the working base.
         // When a ref, it may or may not be the actual base.
         // When a commit, we must rebase onto the actual base.
@@ -1473,17 +1472,20 @@ class GitHubHelper {
     }
     createIssueComment(repo, issueNumber, body) {
         return __awaiter(this, void 0, void 0, function* () {
-            core.info(`Creating issue comment`);
             if (typeof repo === 'string') {
                 repo = this.parseRepository(repo);
             }
+            core.info(`Creating comment on ${repo.repo} issue #${issueNumber}`);
             try {
-                yield this.octokit.request(`POST /repos/${repo.owner}/${repo.repo}/issues/${issueNumber}/comments`, {
+                const response = yield this.octokit.request(`POST /repos/${repo.owner}/${repo.repo}/issues/${issueNumber}/comments`, {
                     owner: repo.owner,
                     repo: repo.repo,
                     issue_number: issueNumber,
                     body,
                 });
+                if (response.status != 201) {
+                    core.warning(`Failed to create issue comment. ${response.data}`);
+                }
             }
             catch (e) {
                 const errorMessage = utils.getErrorMessage(e);
