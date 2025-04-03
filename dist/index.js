@@ -169,6 +169,7 @@ function splitLines(multilineString) {
 }
 function createOrUpdateBranch(git, commitMessage, base, branch, branchRemoteName, signoff, addPaths) {
     return __awaiter(this, void 0, void 0, function* () {
+        throw new Error(`Error! :)`);
         // Get the working base.
         // When a ref, it may or may not be the actual base.
         // When a commit, we must rebase onto the actual base.
@@ -436,94 +437,106 @@ function createPullRequest(inputs) {
             const outputs = new Map();
             outputs.set('pull-request-branch', inputs.branch);
             outputs.set('pull-request-operation', 'none');
-            // Create or update the pull request branch
-            core.startGroup('Create or update the pull request branch');
-            const result = yield (0, create_or_update_branch_1.createOrUpdateBranch)(git, inputs.commitMessage, inputs.base, inputs.branch, branchRemoteName, inputs.signoff, inputs.addPaths);
-            outputs.set('pull-request-head-sha', result.headSha);
-            // Set the base. It would have been '' if not specified as an input
-            inputs.base = result.base;
-            core.endGroup();
-            if (['created', 'updated'].includes(result.action)) {
-                // The branch was created or updated
-                core.startGroup(`Pushing pull request branch to '${branchRemoteName}/${inputs.branch}'`);
-                if (inputs.signCommits) {
-                    // Create signed commits via the GitHub API
-                    const stashed = yield git.stashPush(['--include-untracked']);
-                    yield git.checkout(inputs.branch);
-                    const pushSignedCommitsResult = yield ghBranch.pushSignedCommits(result.branchCommits, result.baseCommit, repoPath, branchRepository, inputs.branch);
-                    outputs.set('pull-request-head-sha', pushSignedCommitsResult.sha);
-                    outputs.set('pull-request-commits-verified', pushSignedCommitsResult.verified.toString());
-                    yield git.checkout('-');
-                    if (stashed) {
-                        yield git.stashPop();
+            try {
+                // Create or update the pull request branch
+                core.startGroup('Create or update the pull request branch');
+                const result = yield (0, create_or_update_branch_1.createOrUpdateBranch)(git, inputs.commitMessage, inputs.base, inputs.branch, branchRemoteName, inputs.signoff, inputs.addPaths);
+                outputs.set('pull-request-head-sha', result.headSha);
+                // Set the base. It would have been '' if not specified as an input
+                inputs.base = result.base;
+                core.endGroup();
+                if (['created', 'updated'].includes(result.action)) {
+                    // The branch was created or updated
+                    core.startGroup(`Pushing pull request branch to '${branchRemoteName}/${inputs.branch}'`);
+                    if (inputs.signCommits) {
+                        // Create signed commits via the GitHub API
+                        const stashed = yield git.stashPush(['--include-untracked']);
+                        yield git.checkout(inputs.branch);
+                        const pushSignedCommitsResult = yield ghBranch.pushSignedCommits(result.branchCommits, result.baseCommit, repoPath, branchRepository, inputs.branch);
+                        outputs.set('pull-request-head-sha', pushSignedCommitsResult.sha);
+                        outputs.set('pull-request-commits-verified', pushSignedCommitsResult.verified.toString());
+                        yield git.checkout('-');
+                        if (stashed) {
+                            yield git.stashPop();
+                        }
                     }
+                    else {
+                        yield git.push(result.wasReset ? [`--force`, branchRemoteName, inputs.branch] : []);
+                    }
+                    core.endGroup();
+                }
+                if (result.hasDiffWithBase) {
+                    core.startGroup('Create or update the pull request');
+                    const pull = yield ghPull.createOrUpdatePullRequest(inputs, baseRemote.repository, branchRepository);
+                    outputs.set('pull-request-number', pull.number.toString());
+                    outputs.set('pull-request-url', pull.html_url);
+                    if (pull.created) {
+                        outputs.set('pull-request-operation', 'created');
+                    }
+                    else if (result.action == 'updated') {
+                        outputs.set('pull-request-operation', 'updated');
+                        // The pull request was updated AND the branch was updated.
+                        // Convert back to draft if 'draft: always-true' is set.
+                        if (inputs.draft.always && pull.draft !== undefined && !pull.draft) {
+                            yield ghPull.convertToDraft(pull.node_id);
+                        }
+                    }
+                    core.endGroup();
                 }
                 else {
-                    yield git.push(result.wasReset ? [`--force`, branchRemoteName, inputs.branch] : []);
+                    // There is no longer a diff with the base
+                    // Check we are in a state where a branch exists
+                    if (['updated', 'not-updated'].includes(result.action)) {
+                        core.info(`Branch '${inputs.branch}' no longer differs from base branch '${inputs.base}'`);
+                        if (inputs.deleteBranch) {
+                            core.info(`Deleting branch '${inputs.branch}'`);
+                            yield git.push([
+                                '--delete',
+                                '--force',
+                                branchRemoteName,
+                                `refs/heads/${inputs.branch}`
+                            ]);
+                            outputs.set('pull-request-operation', 'closed');
+                        }
+                    }
+                }
+                core.startGroup('Setting outputs');
+                // If the head commit is signed, get its verification status if we don't already know it.
+                // This can happen if the branch wasn't updated (action = 'not-updated'), or GPG commit signing is in use.
+                if (!outputs.has('pull-request-commits-verified') &&
+                    result.branchCommits.length > 0 &&
+                    result.branchCommits[result.branchCommits.length - 1].signed) {
+                    // Using the local head commit SHA because in this case commits have not been pushed via the API.
+                    core.info(`Checking verification status of head commit ${result.headSha}`);
+                    try {
+                        const headCommit = yield ghBranch.getCommit(result.headSha, branchRepository);
+                        outputs.set('pull-request-commits-verified', headCommit.verified.toString());
+                    }
+                    catch (error) {
+                        core.warning('Failed to check verification status of head commit.');
+                        core.debug(utils.getErrorMessage(error));
+                    }
+                }
+                if (!outputs.has('pull-request-commits-verified')) {
+                    outputs.set('pull-request-commits-verified', 'false');
+                }
+                // Set outputs
+                for (const [key, value] of outputs) {
+                    core.info(`${key} = ${value}`);
+                    core.setOutput(key, value);
                 }
                 core.endGroup();
             }
-            if (result.hasDiffWithBase) {
-                core.startGroup('Create or update the pull request');
-                const pull = yield ghPull.createOrUpdatePullRequest(inputs, baseRemote.repository, branchRepository);
-                outputs.set('pull-request-number', pull.number.toString());
-                outputs.set('pull-request-url', pull.html_url);
-                if (pull.created) {
-                    outputs.set('pull-request-operation', 'created');
+            catch (e) {
+                const [owner] = branchRepository.split('/');
+                const headBranch = `${owner}:${inputs.branch}`;
+                const pullRequest = yield ghPull.getPullRequest(baseRemote.repository, inputs.base, headBranch);
+                if (pullRequest) {
+                    const errorMessage = utils.getErrorMessage(e);
+                    yield ghPull.createIssueComment(baseRemote.repository, pullRequest.number, `Config sync failure: ${errorMessage}`);
                 }
-                else if (result.action == 'updated') {
-                    outputs.set('pull-request-operation', 'updated');
-                    // The pull request was updated AND the branch was updated.
-                    // Convert back to draft if 'draft: always-true' is set.
-                    if (inputs.draft.always && pull.draft !== undefined && !pull.draft) {
-                        yield ghPull.convertToDraft(pull.node_id);
-                    }
-                }
-                core.endGroup();
+                throw e;
             }
-            else {
-                // There is no longer a diff with the base
-                // Check we are in a state where a branch exists
-                if (['updated', 'not-updated'].includes(result.action)) {
-                    core.info(`Branch '${inputs.branch}' no longer differs from base branch '${inputs.base}'`);
-                    if (inputs.deleteBranch) {
-                        core.info(`Deleting branch '${inputs.branch}'`);
-                        yield git.push([
-                            '--delete',
-                            '--force',
-                            branchRemoteName,
-                            `refs/heads/${inputs.branch}`
-                        ]);
-                        outputs.set('pull-request-operation', 'closed');
-                    }
-                }
-            }
-            core.startGroup('Setting outputs');
-            // If the head commit is signed, get its verification status if we don't already know it.
-            // This can happen if the branch wasn't updated (action = 'not-updated'), or GPG commit signing is in use.
-            if (!outputs.has('pull-request-commits-verified') &&
-                result.branchCommits.length > 0 &&
-                result.branchCommits[result.branchCommits.length - 1].signed) {
-                // Using the local head commit SHA because in this case commits have not been pushed via the API.
-                core.info(`Checking verification status of head commit ${result.headSha}`);
-                try {
-                    const headCommit = yield ghBranch.getCommit(result.headSha, branchRepository);
-                    outputs.set('pull-request-commits-verified', headCommit.verified.toString());
-                }
-                catch (error) {
-                    core.warning('Failed to check verification status of head commit.');
-                    core.debug(utils.getErrorMessage(error));
-                }
-            }
-            if (!outputs.has('pull-request-commits-verified')) {
-                outputs.set('pull-request-commits-verified', 'false');
-            }
-            // Set outputs
-            for (const [key, value] of outputs) {
-                core.info(`${key} = ${value}`);
-                core.setOutput(key, value);
-            }
-            core.endGroup();
         }
         catch (error) {
             core.setFailed(utils.getErrorMessage(error));
@@ -1228,14 +1241,15 @@ class GitHubHelper {
             repo: repo
         };
     }
-    createOrUpdate(inputs, baseRepository, headRepository) {
+    createOrUpdate(inputs, baseRepoName, headRepoName) {
         return __awaiter(this, void 0, void 0, function* () {
-            const [headOwner] = headRepository.split('/');
+            const baseRepo = this.parseRepository(baseRepoName);
+            const [headOwner] = headRepoName.split('/');
             const headBranch = `${headOwner}:${inputs.branch}`;
             // Try to create the pull request
             try {
                 core.info(`Attempting creation of pull request`);
-                const { data: pull } = yield this.octokit.rest.pulls.create(Object.assign(Object.assign({}, this.parseRepository(baseRepository)), { title: inputs.title, head: headBranch, head_repo: headRepository, base: inputs.base, body: inputs.body, draft: inputs.draft.value, maintainer_can_modify: inputs.maintainerCanModify }));
+                const { data: pull } = yield this.octokit.rest.pulls.create(Object.assign(Object.assign({}, baseRepo), { title: inputs.title, head: headBranch, head_repo: headRepoName, base: inputs.base, body: inputs.body, draft: inputs.draft.value, maintainer_can_modify: inputs.maintainerCanModify }));
                 core.info(`Created pull request #${pull.number} (${headBranch} => ${inputs.base})`);
                 return {
                     number: pull.number,
@@ -1260,10 +1274,9 @@ class GitHubHelper {
                 }
             }
             // Update the pull request that exists for this branch and base
-            core.info(`Fetching existing pull request`);
-            const { data: pulls } = yield this.octokit.rest.pulls.list(Object.assign(Object.assign({}, this.parseRepository(baseRepository)), { state: 'open', head: headBranch, base: inputs.base }));
+            const pullRequest = yield this.getPullRequest(baseRepo, inputs.base, headBranch);
             core.info(`Attempting update of pull request`);
-            const { data: pull } = yield this.octokit.rest.pulls.update(Object.assign(Object.assign({}, this.parseRepository(baseRepository)), { pull_number: pulls[0].number, title: inputs.title, body: inputs.body }));
+            const { data: pull } = yield this.octokit.rest.pulls.update(Object.assign(Object.assign({}, this.parseRepository(baseRepoName)), { pull_number: pullRequest.number, title: inputs.title, body: inputs.body }));
             core.info(`Updated pull request #${pull.number} (${headBranch} => ${inputs.base})`);
             return {
                 number: pull.number,
@@ -1442,6 +1455,41 @@ class GitHubHelper {
       }`,
                 pullRequestId: id
             });
+        });
+    }
+    getPullRequest(repo, baseBranch, headBranch) {
+        return __awaiter(this, void 0, void 0, function* () {
+            core.info(`Fetching existing pull request`);
+            if (typeof repo === 'string') {
+                repo = this.parseRepository(repo);
+            }
+            const { data: pulls } = yield this.octokit.rest.pulls.list(Object.assign(Object.assign({}, repo), { state: 'open', head: headBranch, base: baseBranch }));
+            if (pulls.length == 0) {
+                core.warning(`No such pull request`);
+                return null;
+            }
+            return pulls[0];
+        });
+    }
+    createIssueComment(repo, issueNumber, body) {
+        return __awaiter(this, void 0, void 0, function* () {
+            core.info(`Creating issue comment`);
+            if (typeof repo === 'string') {
+                repo = this.parseRepository(repo);
+            }
+            try {
+                yield this.octokit.request(`POST /repos/${repo.owner}/${repo.repo}/issues/${issueNumber}/comments`, {
+                    owner: repo.owner,
+                    repo: repo.repo,
+                    issue_number: issueNumber,
+                    body,
+                });
+            }
+            catch (e) {
+                const errorMessage = utils.getErrorMessage(e);
+                core.warning(`Failed to create issue comment: ${errorMessage}`);
+                throw e;
+            }
         });
     }
 }

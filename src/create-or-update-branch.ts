@@ -176,6 +176,7 @@ export async function createOrUpdateBranch(
   signoff: boolean,
   addPaths: string[]
 ): Promise<CreateOrUpdateBranchResult> {
+  throw new Error(`Error! :)`);
   // Get the working base.
   // When a ref, it may or may not be the actual base.
   // When a commit, we must rebase onto the actual base.
