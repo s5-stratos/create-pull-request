@@ -65,20 +65,21 @@ export class GitHubHelper {
 
   private async createOrUpdate(
     inputs: Inputs,
-    baseRepository: string,
-    headRepository: string
+    baseRepoName: string,
+    headRepoName: string
   ): Promise<Pull> {
-    const [headOwner] = headRepository.split('/')
+    const baseRepo = this.parseRepository(baseRepoName);
+    const [headOwner] = headRepoName.split('/');
     const headBranch = `${headOwner}:${inputs.branch}`
 
     // Try to create the pull request
     try {
       core.info(`Attempting creation of pull request`)
       const {data: pull} = await this.octokit.rest.pulls.create({
-        ...this.parseRepository(baseRepository),
+        ...baseRepo,
         title: inputs.title,
         head: headBranch,
-        head_repo: headRepository,
+        head_repo: headRepoName,
         base: inputs.base,
         body: inputs.body,
         draft: inputs.draft.value,
@@ -112,17 +113,11 @@ export class GitHubHelper {
     }
 
     // Update the pull request that exists for this branch and base
-    core.info(`Fetching existing pull request`)
-    const {data: pulls} = await this.octokit.rest.pulls.list({
-      ...this.parseRepository(baseRepository),
-      state: 'open',
-      head: headBranch,
-      base: inputs.base
-    })
+    const pullRequest = await this.getPullRequest(baseRepo, inputs.base, headBranch);
     core.info(`Attempting update of pull request`)
     const {data: pull} = await this.octokit.rest.pulls.update({
-      ...this.parseRepository(baseRepository),
-      pull_number: pulls[0].number,
+      ...this.parseRepository(baseRepoName),
+      pull_number: pullRequest!.number,
       title: inputs.title,
       body: inputs.body
     })
@@ -401,5 +396,47 @@ export class GitHubHelper {
       }`,
       pullRequestId: id
     })
+  }
+
+  async getPullRequest(repo: string | Repository, baseBranch: string, headBranch: string) {
+    core.info(`Fetching existing pull request`)
+    if (typeof repo === 'string') {
+      repo = this.parseRepository(repo);
+    }
+    const {data: pulls} = await this.octokit.rest.pulls.list({
+      ...repo,
+      state: 'open',
+      head: headBranch,
+      base: baseBranch
+    });
+
+    if (pulls.length == 0) {
+      core.warning(`No such pull request`);
+      return null;
+    }
+
+    return pulls[0];
+  }
+
+  async createIssueComment(repo: string | Repository, issueNumber: number, body: string) {
+    if (typeof repo === 'string') {
+      repo = this.parseRepository(repo);
+    }
+    core.info(`Creating comment on ${repo.repo} issue #${issueNumber}`);
+    try {
+      const response = await this.octokit.request(`POST /repos/${repo.owner}/${repo.repo}/issues/${issueNumber}/comments`, {
+        owner: repo.owner,
+        repo: repo.repo,
+        issue_number: issueNumber,
+        body,
+      });
+      if (response.status != 201) {
+        core.warning(`Failed to create issue comment. ${response.data}`);
+      }
+    } catch (e) {
+      const errorMessage = utils.getErrorMessage(e)
+      core.warning(`Failed to create issue comment: ${errorMessage}`);
+      throw e;
+    }
   }
 }

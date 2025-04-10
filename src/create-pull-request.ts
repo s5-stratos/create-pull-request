@@ -185,129 +185,140 @@ export async function createPullRequest(inputs: Inputs): Promise<void> {
     outputs.set('pull-request-branch', inputs.branch)
     outputs.set('pull-request-operation', 'none')
 
-    // Create or update the pull request branch
-    core.startGroup('Create or update the pull request branch')
-    const result = await createOrUpdateBranch(
-      git,
-      inputs.commitMessage,
-      inputs.base,
-      inputs.branch,
-      branchRemoteName,
-      inputs.signoff,
-      inputs.addPaths
-    )
-    outputs.set('pull-request-head-sha', result.headSha)
-    // Set the base. It would have been '' if not specified as an input
-    inputs.base = result.base
-    core.endGroup()
+    try {
+      // Create or update the pull request branch
+      core.startGroup('Create or update the pull request branch')
+      const result = await createOrUpdateBranch(
+        git,
+        inputs.commitMessage,
+        inputs.base,
+        inputs.branch,
+        branchRemoteName,
+        inputs.signoff,
+        inputs.addPaths
+      );
 
-    if (['created', 'updated'].includes(result.action)) {
-      // The branch was created or updated
-      core.startGroup(
-        `Pushing pull request branch to '${branchRemoteName}/${inputs.branch}'`
-      )
-      if (inputs.signCommits) {
-        // Create signed commits via the GitHub API
-        const stashed = await git.stashPush(['--include-untracked'])
-        await git.checkout(inputs.branch)
-        const pushSignedCommitsResult = await ghBranch.pushSignedCommits(
-          result.branchCommits,
-          result.baseCommit,
-          repoPath,
-          branchRepository,
-          inputs.branch
-        )
-        outputs.set('pull-request-head-sha', pushSignedCommitsResult.sha)
-        outputs.set(
-          'pull-request-commits-verified',
-          pushSignedCommitsResult.verified.toString()
-        )
-        await git.checkout('-')
-        if (stashed) {
-          await git.stashPop()
-        }
-      } else {
-        await git.push(
-          result.wasReset ? [`--force`, branchRemoteName, inputs.branch] : []
-        )
-      }
+      outputs.set('pull-request-head-sha', result.headSha)
+      // Set the base. It would have been '' if not specified as an input
+      inputs.base = result.base
       core.endGroup()
-    }
-
-    if (result.hasDiffWithBase) {
-      core.startGroup('Create or update the pull request')
-      const pull = await ghPull.createOrUpdatePullRequest(
-        inputs,
-        baseRemote.repository,
-        branchRepository
-      )
-      outputs.set('pull-request-number', pull.number.toString())
-      outputs.set('pull-request-url', pull.html_url)
-      if (pull.created) {
-        outputs.set('pull-request-operation', 'created')
-      } else if (result.action == 'updated') {
-        outputs.set('pull-request-operation', 'updated')
-        // The pull request was updated AND the branch was updated.
-        // Convert back to draft if 'draft: always-true' is set.
-        if (inputs.draft.always && pull.draft !== undefined && !pull.draft) {
-          await ghPull.convertToDraft(pull.node_id)
-        }
-      }
-      core.endGroup()
-    } else {
-      // There is no longer a diff with the base
-      // Check we are in a state where a branch exists
-      if (['updated', 'not-updated'].includes(result.action)) {
-        core.info(
-          `Branch '${inputs.branch}' no longer differs from base branch '${inputs.base}'`
+      if (['created', 'updated'].includes(result.action)) {
+        // The branch was created or updated
+        core.startGroup(
+          `Pushing pull request branch to '${branchRemoteName}/${inputs.branch}'`
         )
-        if (inputs.deleteBranch) {
-          core.info(`Deleting branch '${inputs.branch}'`)
-          await git.push([
-            '--delete',
-            '--force',
-            branchRemoteName,
-            `refs/heads/${inputs.branch}`
-          ])
-          outputs.set('pull-request-operation', 'closed')
+        if (inputs.signCommits) {
+          // Create signed commits via the GitHub API
+          const stashed = await git.stashPush(['--include-untracked'])
+          await git.checkout(inputs.branch)
+          const pushSignedCommitsResult = await ghBranch.pushSignedCommits(
+            result.branchCommits,
+            result.baseCommit,
+            repoPath,
+            branchRepository,
+            inputs.branch
+          )
+          outputs.set('pull-request-head-sha', pushSignedCommitsResult.sha)
+          outputs.set(
+            'pull-request-commits-verified',
+            pushSignedCommitsResult.verified.toString()
+          )
+          await git.checkout('-')
+          if (stashed) {
+            await git.stashPop()
+          }
+        } else {
+          await git.push(
+            result.wasReset ? [`--force`, branchRemoteName, inputs.branch] : []
+          )
         }
+        core.endGroup()
       }
-    }
 
-    core.startGroup('Setting outputs')
-    // If the head commit is signed, get its verification status if we don't already know it.
-    // This can happen if the branch wasn't updated (action = 'not-updated'), or GPG commit signing is in use.
-    if (
-      !outputs.has('pull-request-commits-verified') &&
-      result.branchCommits.length > 0 &&
-      result.branchCommits[result.branchCommits.length - 1].signed
-    ) {
-      // Using the local head commit SHA because in this case commits have not been pushed via the API.
-      core.info(`Checking verification status of head commit ${result.headSha}`)
-      try {
-        const headCommit = await ghBranch.getCommit(
-          result.headSha,
+      if (result.hasDiffWithBase) {
+        core.startGroup('Create or update the pull request')
+        const pull = await ghPull.createOrUpdatePullRequest(
+          inputs,
+          baseRemote.repository,
           branchRepository
         )
-        outputs.set(
-          'pull-request-commits-verified',
-          headCommit.verified.toString()
-        )
-      } catch (error) {
-        core.warning('Failed to check verification status of head commit.')
-        core.debug(utils.getErrorMessage(error))
+        outputs.set('pull-request-number', pull.number.toString())
+        outputs.set('pull-request-url', pull.html_url)
+        if (pull.created) {
+          outputs.set('pull-request-operation', 'created')
+        } else if (result.action == 'updated') {
+          outputs.set('pull-request-operation', 'updated')
+          // The pull request was updated AND the branch was updated.
+          // Convert back to draft if 'draft: always-true' is set.
+          if (inputs.draft.always && pull.draft !== undefined && !pull.draft) {
+            await ghPull.convertToDraft(pull.node_id)
+          }
+        }
+        core.endGroup()
+      } else {
+        // There is no longer a diff with the base
+        // Check we are in a state where a branch exists
+        if (['updated', 'not-updated'].includes(result.action)) {
+          core.info(
+            `Branch '${inputs.branch}' no longer differs from base branch '${inputs.base}'`
+          )
+          if (inputs.deleteBranch) {
+            core.info(`Deleting branch '${inputs.branch}'`)
+            await git.push([
+              '--delete',
+              '--force',
+              branchRemoteName,
+              `refs/heads/${inputs.branch}`
+            ])
+            outputs.set('pull-request-operation', 'closed')
+          }
+        }
       }
-    }
-    if (!outputs.has('pull-request-commits-verified')) {
-      outputs.set('pull-request-commits-verified', 'false')
-    }
 
-    // Set outputs
-    for (const [key, value] of outputs) {
-      core.info(`${key} = ${value}`)
-      core.setOutput(key, value)
+      core.startGroup('Setting outputs')
+      // If the head commit is signed, get its verification status if we don't already know it.
+      // This can happen if the branch wasn't updated (action = 'not-updated'), or GPG commit signing is in use.
+      if (
+        !outputs.has('pull-request-commits-verified') &&
+        result.branchCommits.length > 0 &&
+        result.branchCommits[result.branchCommits.length - 1].signed
+      ) {
+        // Using the local head commit SHA because in this case commits have not been pushed via the API.
+        core.info(`Checking verification status of head commit ${result.headSha}`)
+        try {
+          const headCommit = await ghBranch.getCommit(
+            result.headSha,
+            branchRepository
+          )
+          outputs.set(
+            'pull-request-commits-verified',
+            headCommit.verified.toString()
+          )
+        } catch (error) {
+          core.warning('Failed to check verification status of head commit.')
+          core.debug(utils.getErrorMessage(error))
+        }
+      }
+      if (!outputs.has('pull-request-commits-verified')) {
+        outputs.set('pull-request-commits-verified', 'false')
+      }
+
+      // Set outputs
+      for (const [key, value] of outputs) {
+        core.info(`${key} = ${value}`)
+        core.setOutput(key, value)
+      }
+      core.endGroup()
+    } catch (e) {
+      const [owner] = branchRepository.split('/');
+      const headBranch = `${owner}:${inputs.branch}`
+      const pullRequest = await ghPull.getPullRequest(baseRemote.repository, inputs.base, headBranch);
+      if (pullRequest) {
+        const errorMessage = utils.getErrorMessage(e);
+        await ghPull.createIssueComment(baseRemote.repository, pullRequest.number, `Config sync failure: ${errorMessage}`);
+      }
+      throw e;
     }
-    core.endGroup()
   } catch (error) {
     core.setFailed(utils.getErrorMessage(error))
   } finally {
