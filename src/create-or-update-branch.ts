@@ -161,7 +161,7 @@ interface CreateOrUpdateBranchResult {
   action: string
   base: string
   hasDiffWithBase: boolean
-  wasReset: boolean
+  wasResetOrRebased: boolean
   baseCommit: Commit
   headSha: string
   branchCommits: Commit[]
@@ -174,7 +174,8 @@ export async function createOrUpdateBranch(
   branch: string,
   branchRemoteName: string,
   signoff: boolean,
-  addPaths: string[]
+  addPaths: string[],
+  isConfigSync: boolean
 ): Promise<CreateOrUpdateBranchResult> {
   // Get the working base.
   // When a ref, it may or may not be the actual base.
@@ -209,19 +210,25 @@ export async function createOrUpdateBranch(
   }
 
   // Check if the pull request branch is behind the base branch
-  let wasReset = false;
+  let wasResetOrRebased = false;
   await git.exec(['fetch', baseRemote, base])
-  if (await isBehind(git, base, branch)) {
+  /*
+   * For configuration repos we can safely soft reset to base without losing history
+   *
+   * If this is indeed for a configuration repo, the current branch must match the base
+   * branch before committing the current changes so that the commit patch is correct
+   */
+  if (isConfigSync && (await isBehind(git, base, branch))) {
     /*
      * New changes to the base branch are not present in the PR branch.
-     * 
+     *
      * Reset the state of the PR branch back to that of the base branch,
      * eliminating the commits currently in the PR branch.
      *
      * Normally dropping commits is undesirable, but in this specific case, it's
      * necessary to circumvent any attempt git would make to merge/rebase the
-     * previous PR branch commits onto the newer base branch commits. 
-     * 
+     * previous PR branch commits onto the newer base branch commits.
+     *
      * Without doing so, this job would almost certainly fail due to conflicts.
      *
      * Ultimately, either the dropped commits were a subset of the changes in the
@@ -230,7 +237,7 @@ export async function createOrUpdateBranch(
     core.info(`Pull request branch '${branch}' is behind base branch '${base}'.`)
     await git.exec(['reset', '--soft', `${baseRemote}/${base}`])
     core.info(`Reset '${branch}' to '${base}'.`)
-    wasReset = true;
+    wasResetOrRebased = true;
   }
 
   // Commit any changes
@@ -257,6 +264,24 @@ export async function createOrUpdateBranch(
     }
   }
 
+  /*
+   * For non-configuration repos, it is imperative that we preserve all history.
+   *
+   * To ensure that all changes from both branches are retained after the merge,
+   * when this branch is behind the base, rebase all new commits onto base.
+   *
+   * This must be done after committing any new changes.
+   */
+  if (!isConfigSync && (await isBehind(git, base, branch))) {
+    // Rebase the current branch onto the base branch
+    core.info(
+      `Pull request branch '${branch}' is behind base branch '${base}'.`
+    )
+    await git.exec(['pull', '--rebase', baseRemote, base])
+    core.info(`Rebased '${branch}' commits ontop of '${base}'.`)
+    wasResetOrRebased = true
+  }
+
   hasDiffWithBase = await isAhead(git, base, branch)
 
   // If the base is not specified it is assumed to be the working base.
@@ -278,7 +303,7 @@ export async function createOrUpdateBranch(
     action: action,
     base: base,
     hasDiffWithBase: hasDiffWithBase,
-    wasReset: wasReset,
+    wasResetOrRebased: wasResetOrRebased,
     baseCommit: baseCommit,
     headSha: headSha,
     branchCommits: branchCommits

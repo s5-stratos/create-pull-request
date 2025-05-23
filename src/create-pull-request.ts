@@ -37,6 +37,7 @@ export interface Inputs {
     always: boolean
   }
   maintainerCanModify: boolean
+  isConfigSync: boolean
 }
 
 export async function createPullRequest(inputs: Inputs): Promise<void> {
@@ -195,8 +196,9 @@ export async function createPullRequest(inputs: Inputs): Promise<void> {
         inputs.branch,
         branchRemoteName,
         inputs.signoff,
-        inputs.addPaths
-      );
+        inputs.addPaths,
+        inputs.isConfigSync
+      )
 
       outputs.set('pull-request-head-sha', result.headSha)
       // Set the base. It would have been '' if not specified as an input
@@ -229,7 +231,7 @@ export async function createPullRequest(inputs: Inputs): Promise<void> {
           }
         } else {
           await git.push(
-            result.wasReset ? [`--force`, branchRemoteName, inputs.branch] : []
+            result.wasResetOrRebased ? [`--force-with-lease`, branchRemoteName, inputs.branch] : []
           )
         }
         core.endGroup()
