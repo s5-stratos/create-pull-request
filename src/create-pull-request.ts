@@ -231,7 +231,9 @@ export async function createPullRequest(inputs: Inputs): Promise<void> {
           }
         } else {
           await git.push(
-            result.wasResetOrRebased ? [`--force-with-lease`, branchRemoteName, inputs.branch] : []
+            result.wasResetOrRebased
+              ? [`--force-with-lease`, branchRemoteName, inputs.branch]
+              : []
           )
         }
         core.endGroup()
@@ -286,7 +288,9 @@ export async function createPullRequest(inputs: Inputs): Promise<void> {
         result.branchCommits[result.branchCommits.length - 1].signed
       ) {
         // Using the local head commit SHA because in this case commits have not been pushed via the API.
-        core.info(`Checking verification status of head commit ${result.headSha}`)
+        core.info(
+          `Checking verification status of head commit ${result.headSha}`
+        )
         try {
           const headCommit = await ghBranch.getCommit(
             result.headSha,
@@ -312,14 +316,22 @@ export async function createPullRequest(inputs: Inputs): Promise<void> {
       }
       core.endGroup()
     } catch (e) {
-      const [owner] = branchRepository.split('/');
+      const [owner] = branchRepository.split('/')
       const headBranch = `${owner}:${inputs.branch}`
-      const pullRequest = await ghPull.getPullRequest(baseRemote.repository, inputs.base, headBranch);
+      const pullRequest = await ghPull.getPullRequest(
+        baseRemote.repository,
+        inputs.base,
+        headBranch
+      )
       if (pullRequest) {
-        const errorMessage = utils.getErrorMessage(e);
-        await ghPull.createIssueComment(baseRemote.repository, pullRequest.number, `Config sync failure: ${errorMessage}`);
+        const errorMessage = utils.getErrorMessage(e)
+        await ghPull.createIssueComment(
+          baseRemote.repository,
+          pullRequest.number,
+          `Config sync failure: ${errorMessage}`
+        )
       }
-      throw e;
+      throw e
     }
   } catch (error) {
     core.setFailed(utils.getErrorMessage(error))
