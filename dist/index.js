@@ -55,10 +55,7 @@ exports.tryFetch = tryFetch;
 exports.buildBranchCommits = buildBranchCommits;
 exports.createOrUpdateBranch = createOrUpdateBranch;
 const core = __importStar(__nccwpck_require__(7484));
-const utils = __importStar(__nccwpck_require__(9277));
-const CHERRYPICK_EMPTY = 'The previous cherry-pick is now empty, possibly due to conflict resolution.';
 const NOTHING_TO_COMMIT = 'nothing to commit, working tree clean';
-const FETCH_DEPTH_MARGIN = 10;
 var WorkingBaseType;
 (function (WorkingBaseType) {
     WorkingBaseType["Branch"] = "branch";
@@ -136,38 +133,7 @@ function isBehind(git, branch1, branch2) {
         return (yield commitsBehind(git, branch1, branch2)) > 0;
     });
 }
-// Return true if branch2 is even with branch1
-function isEven(git, branch1, branch2) {
-    return __awaiter(this, void 0, void 0, function* () {
-        return (!(yield isAhead(git, branch1, branch2)) &&
-            !(yield isBehind(git, branch1, branch2)));
-    });
-}
-// Return true if the specified number of commits on branch1 and branch2 have a diff
-function commitsHaveDiff(git, branch1, branch2, depth) {
-    return __awaiter(this, void 0, void 0, function* () {
-        // Some action use cases lead to the depth being a very large number and the diff fails.
-        // I've made this check optional for now because it was a fix for an edge case that is
-        // very rare, anyway.
-        try {
-            const diff1 = (yield git.exec(['diff', '--stat', `${branch1}..${branch1}~${depth}`])).stdout.trim();
-            const diff2 = (yield git.exec(['diff', '--stat', `${branch2}..${branch2}~${depth}`])).stdout.trim();
-            return diff1 !== diff2;
-        }
-        catch (error) {
-            core.info('Failed optional check of commits diff; Skipping.');
-            core.debug(utils.getErrorMessage(error));
-            return false;
-        }
-    });
-}
-function splitLines(multilineString) {
-    return multilineString
-        .split('\n')
-        .map(s => s.trim())
-        .filter(x => x !== '');
-}
-function createOrUpdateBranch(git, commitMessage, base, branch, branchRemoteName, signoff, addPaths) {
+function createOrUpdateBranch(git, commitMessage, base, branch, branchRemoteName, signoff, addPaths, isConfigSync) {
     return __awaiter(this, void 0, void 0, function* () {
         // Get the working base.
         // When a ref, it may or may not be the actual base.
@@ -198,9 +164,15 @@ function createOrUpdateBranch(git, commitMessage, base, branch, branchRemoteName
             }
         }
         // Check if the pull request branch is behind the base branch
-        let wasReset = false;
+        let wasResetOrRebased = false;
         yield git.exec(['fetch', baseRemote, base]);
-        if (yield isBehind(git, base, branch)) {
+        /*
+         * For configuration repos we can safely soft reset to base without losing history
+         *
+         * If this is indeed for a configuration repo, the current branch must match the base
+         * branch before committing the current changes so that the commit patch is correct
+         */
+        if (isConfigSync && (yield isBehind(git, base, branch))) {
             /*
              * New changes to the base branch are not present in the PR branch.
              *
@@ -219,7 +191,7 @@ function createOrUpdateBranch(git, commitMessage, base, branch, branchRemoteName
             core.info(`Pull request branch '${branch}' is behind base branch '${base}'.`);
             yield git.exec(['reset', '--soft', `${baseRemote}/${base}`]);
             core.info(`Reset '${branch}' to '${base}'.`);
-            wasReset = true;
+            wasResetOrRebased = true;
         }
         // Commit any changes
         if (yield git.isDirty(true, addPaths)) {
@@ -243,6 +215,21 @@ function createOrUpdateBranch(git, commitMessage, base, branch, branchRemoteName
                 throw new Error(`Unexpected error: ${commitResult.stderr}`);
             }
         }
+        /*
+         * For non-configuration repos, it is imperative that we preserve all history.
+         *
+         * To ensure that all changes from both branches are retained after the merge,
+         * when this branch is behind the base, rebase all new commits onto base.
+         *
+         * This must be done after committing any new changes.
+         */
+        if (!isConfigSync && (yield isBehind(git, base, branch))) {
+            // Rebase the current branch onto the base branch
+            core.info(`Pull request branch '${branch}' is behind base branch '${base}'.`);
+            yield git.exec(['pull', '--rebase', baseRemote, base]);
+            core.info(`Rebased '${branch}' commits ontop of '${base}'.`);
+            wasResetOrRebased = true;
+        }
         hasDiffWithBase = yield isAhead(git, base, branch);
         // If the base is not specified it is assumed to be the working base.
         base = base ? base : workingBase;
@@ -260,7 +247,7 @@ function createOrUpdateBranch(git, commitMessage, base, branch, branchRemoteName
             action: action,
             base: base,
             hasDiffWithBase: hasDiffWithBase,
-            wasReset: wasReset,
+            wasResetOrRebased: wasResetOrRebased,
             baseCommit: baseCommit,
             headSha: headSha,
             branchCommits: branchCommits
@@ -439,7 +426,7 @@ function createPullRequest(inputs) {
             try {
                 // Create or update the pull request branch
                 core.startGroup('Create or update the pull request branch');
-                const result = yield (0, create_or_update_branch_1.createOrUpdateBranch)(git, inputs.commitMessage, inputs.base, inputs.branch, branchRemoteName, inputs.signoff, inputs.addPaths);
+                const result = yield (0, create_or_update_branch_1.createOrUpdateBranch)(git, inputs.commitMessage, inputs.base, inputs.branch, branchRemoteName, inputs.signoff, inputs.addPaths, inputs.isConfigSync);
                 outputs.set('pull-request-head-sha', result.headSha);
                 // Set the base. It would have been '' if not specified as an input
                 inputs.base = result.base;
@@ -460,7 +447,9 @@ function createPullRequest(inputs) {
                         }
                     }
                     else {
-                        yield git.push(result.wasReset ? [`--force`, branchRemoteName, inputs.branch] : []);
+                        yield git.push(result.wasResetOrRebased
+                            ? [`--force-with-lease`, branchRemoteName, inputs.branch]
+                            : []);
                     }
                     core.endGroup();
                 }
@@ -1587,7 +1576,8 @@ function run() {
                 teamReviewers: utils.getInputAsArray('team-reviewers'),
                 milestone: Number(core.getInput('milestone')),
                 draft: getDraftInput(),
-                maintainerCanModify: core.getBooleanInput('maintainer-can-modify')
+                maintainerCanModify: core.getBooleanInput('maintainer-can-modify'),
+                isConfigSync: core.getBooleanInput('is-config-sync')
             };
             core.debug(`Inputs: ${(0, util_1.inspect)(inputs)}`);
             if (!inputs.token) {
